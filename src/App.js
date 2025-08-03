@@ -18,7 +18,7 @@ export default function App() {
   // Confirmation modal state
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [confirmMessage, setConfirmMessage] = useState("");
-  const [confirmAction, setConfirmAction] = useState(() => {});
+  const [confirmAction, setConfirmAction] = useState(null);
 
   // Fetch transactions for logged-in user
   useEffect(() => {
@@ -261,7 +261,11 @@ export default function App() {
                 Cancel
               </button>
               <button
-                onClick={confirmAction}
+                onClick={() => {
+                  if (typeof confirmAction === "function") {
+                    confirmAction(); // Explicitly call the action
+                  }
+                }}
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
               >
                 Yes
