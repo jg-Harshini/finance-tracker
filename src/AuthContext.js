@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect } from "react";
+// src/AuthContext.js
+import { createContext, useState, useEffect, useContext } from "react";
 import { auth, provider } from "./firebase";
 import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
 
@@ -7,6 +8,7 @@ export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
   const login = () => signInWithPopup(auth, provider);
