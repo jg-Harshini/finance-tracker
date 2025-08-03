@@ -15,6 +15,11 @@ export default function App() {
   const [editText, setEditText] = useState("");
   const [editAmount, setEditAmount] = useState("");
 
+  // Confirmation modal state
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const [confirmMessage, setConfirmMessage] = useState("");
+  const [confirmAction, setConfirmAction] = useState(() => {});
+
   // Fetch transactions for logged-in user
   useEffect(() => {
     const fetchTransactions = async () => {
@@ -43,10 +48,25 @@ export default function App() {
     setAmount("");
   };
 
-  // Delete a transaction
-  const deleteTransaction = async (id) => {
-    await deleteDoc(doc(db, "transactions", id));
-    setTransactions(transactions.filter((tx) => tx.id !== id));
+  // Trigger delete confirmation
+  const confirmDeleteTransaction = (id) => {
+    setConfirmMessage("Are you sure you want to delete this transaction?");
+    setConfirmAction(() => async () => {
+      await deleteDoc(doc(db, "transactions", id));
+      setTransactions(transactions.filter((tx) => tx.id !== id));
+      setIsConfirmOpen(false);
+    });
+    setIsConfirmOpen(true);
+  };
+
+  // Trigger logout confirmation
+  const confirmLogout = () => {
+    setConfirmMessage("Are you sure you want to log out?");
+    setConfirmAction(() => () => {
+      logout();
+      setIsConfirmOpen(false);
+    });
+    setIsConfirmOpen(true);
   };
 
   // Open edit modal
@@ -66,7 +86,6 @@ export default function App() {
       amount: parseFloat(editAmount),
     });
 
-    // Update state without refetching
     setTransactions(
       transactions.map((tx) =>
         tx.id === editId ? { ...tx, text: editText, amount: parseFloat(editAmount) } : tx
@@ -76,7 +95,7 @@ export default function App() {
     closeModal();
   };
 
-  // Close modal
+  // Close edit modal
   const closeModal = () => {
     setIsEditing(false);
     setEditId(null);
@@ -113,7 +132,7 @@ export default function App() {
           <>
             <div className="flex justify-between items-center mb-4">
               <span className="font-medium">Welcome, {user.displayName}</span>
-              <button onClick={logout} className="text-sm text-red-500 hover:underline">
+              <button onClick={confirmLogout} className="text-sm text-red-500 hover:underline">
                 Logout
               </button>
             </div>
@@ -178,7 +197,7 @@ export default function App() {
                       ✎
                     </button>
                     <button
-                      onClick={() => deleteTransaction(tx.id)}
+                      onClick={() => confirmDeleteTransaction(tx.id)}
                       className="text-gray-400 hover:text-red-600 text-lg"
                       title="Delete"
                     >
@@ -223,6 +242,29 @@ export default function App() {
                 className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
               >
                 Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {isConfirmOpen && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white p-6 rounded-xl shadow-xl w-80">
+            <p className="text-lg mb-6">{confirmMessage}</p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setIsConfirmOpen(false)}
+                className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmAction}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Yes
               </button>
             </div>
           </div>
