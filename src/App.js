@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { db } from "./firebase";
 import { useAuth } from "./AuthContext";
+import { Dropbox } from "dropbox";
 import { collection, addDoc, query, where, getDocs, deleteDoc, doc, updateDoc } from "firebase/firestore";
 
 export default function App() {
@@ -8,7 +9,8 @@ export default function App() {
   const [transactions, setTransactions] = useState([]);
   const [text, setText] = useState("");
   const [amount, setAmount] = useState("");
-
+  const [file, setFile] = useState(null);
+  
   // Edit modal state
   const [isEditing, setIsEditing] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -19,6 +21,9 @@ export default function App() {
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [confirmMessage, setConfirmMessage] = useState("");
   const [confirmAction, setConfirmAction] = useState(null);
+
+  const ACCESS_TOKEN = process.env.REACT_APP_DROPBOX_ACCESS_TOKEN;
+  console.log("Dropbox token (first 10 chars):", ACCESS_TOKEN ? ACCESS_TOKEN.slice(0, 10) + "..." : ACCESS_TOKEN);
 
   // Fetch transactions for logged-in user
   useEffect(() => {
@@ -34,19 +39,125 @@ export default function App() {
     fetchTransactions();
   }, [user]);
 
-  // Add a transaction
-  const addTransaction = async () => {
-    if (!text || !amount) return alert("Please enter both fields");
+ 
+
+// --- Dropbox upload using fetch (no SDK) ---
+const uploadToDropbox = async (file) => {
+  const ACCESS_TOKEN = process.env.REACT_APP_DROPBOX_ACCESS_TOKEN;
+  console.log("DEBUG: uploadToDropbox - token present:", !!ACCESS_TOKEN);
+
+  if (!ACCESS_TOKEN) {
+    throw new Error("Dropbox access token not found. Add REACT_APP_DROPBOX_ACCESS_TOKEN to your .env and restart dev server.");
+  }
+
+  // sanitize filename to avoid problematic chars in path
+  const safeName = file.name.replace(/[^\w.-]/g, '_');
+  const path = `/${Date.now()}_${safeName}`;
+  console.log("DEBUG: Uploading to Dropbox path:", path, "file:", file);
+
+  // 1) Upload file to content API (body = File works fine in fetch)
+  const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${ACCESS_TOKEN}`,
+      "Dropbox-API-Arg": JSON.stringify({
+        path,
+        mode: "add",
+        autorename: true,
+        mute: false
+      }),
+      "Content-Type": "application/octet-stream"
+    },
+    body: file // pass the File object directly
+  });
+
+  const uploadText = await uploadResp.text();
+  if (!uploadResp.ok) {
+    // try to parse JSON error_summary from Dropbox response
+    let errMsg = uploadText;
+    try { const js = JSON.parse(uploadText); errMsg = js.error_summary || JSON.stringify(js); } catch(e) {}
+    throw new Error(`Dropbox upload failed: ${uploadResp.status} ${errMsg}`);
+  }
+
+  let uploadJson;
+  try { uploadJson = JSON.parse(uploadText); } catch (e) { uploadJson = null; }
+  console.log("DEBUG: upload response:", uploadJson);
+
+  // 2) Create a shared link (if it already exists we'll fallback to list_shared_links)
+  const createLinkResp = await fetch("https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${ACCESS_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ path })
+  });
+
+  let linkJson = null;
+  if (createLinkResp.ok) {
+    linkJson = await createLinkResp.json();
+  } else {
+    // if link already exists or create fails, try list_shared_links
+    const text = await createLinkResp.text();
+    console.warn("DEBUG: create_shared_link failed:", createLinkResp.status, text);
+
+    const listResp = await fetch("https://api.dropboxapi.com/2/sharing/list_shared_links", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ path, direct_only: true })
+    });
+
+    if (listResp.ok) {
+      const listJson = await listResp.json();
+      // pick first link if present
+      linkJson = (listJson.links && listJson.links[0]) ? listJson.links[0] : null;
+    } else {
+      const listText = await listResp.text();
+      console.error("DEBUG: list_shared_links also failed:", listResp.status, listText);
+      throw new Error(`Dropbox create/list link failed: create ${createLinkResp.status} / list ${listResp.status}`);
+    }
+  }
+
+  const url = linkJson?.url || linkJson?.links?.[0]?.url;
+  if (!url) throw new Error("Dropbox returned no shared link.");
+
+  // convert to direct download
+  return url.replace("?dl=0", "?dl=1");
+};
+
+// --- Add transaction using uploadToDropbox ---
+const addTransaction = async () => {
+  if (!text || !amount) return alert("Please enter both fields");
+
+  try {
+    let fileUrl = null;
+    if (file) {
+      // attempt upload and propagate clear errors
+      fileUrl = await uploadToDropbox(file);
+      console.log("DEBUG: Received Dropbox fileUrl:", fileUrl);
+    }
+
     const newTransaction = {
       text,
       amount: parseFloat(amount),
       owner: user.uid,
+      fileUrl,
     };
-    await addDoc(collection(db, "transactions"), newTransaction);
-    setTransactions([newTransaction, ...transactions]);
+    const docRef = await addDoc(collection(db, "transactions"), newTransaction);
+    setTransactions([{ id: docRef.id, ...newTransaction }, ...transactions]);
     setText("");
     setAmount("");
-  };
+    setFile(null);
+  } catch (err) {
+    console.error("addTransaction failed:", err);
+    alert("Failed to add transaction: " + (err.message || "See console for details"));
+  }
+};
+
+
 
   // Trigger delete confirmation
   const confirmDeleteTransaction = (id) => {
@@ -163,9 +274,14 @@ export default function App() {
               <input
                 type="number"
                 placeholder="Amount (negative = expense)"
-                className="border border-gray-300 p-3 w-full rounded-xl mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="border border-gray-300 p-3 w-full rounded-xl mb-3 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
+              />
+              <input
+                type="file"
+                className="mb-4"
+                onChange={(e) => setFile(e.target.files[0])}
               />
               <button
                 className="bg-indigo-600 text-white font-semibold px-6 py-3 rounded-xl w-full shadow-md hover:bg-indigo-700 transition"
@@ -185,6 +301,16 @@ export default function App() {
                   }`}
                 >
                   <span className="font-medium text-gray-800">{tx.text}</span>
+                  {tx.fileUrl && (
+                    <a
+                      href={tx.fileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-500 underline ml-2"
+                    >
+                      📎 View File
+                    </a>
+                  )}
                   <div className="flex items-center gap-4">
                     <span className={`font-bold ${tx.amount > 0 ? "text-green-600" : "text-red-600"}`}>
                       {tx.amount > 0 ? "+" : "-"}₹{Math.abs(tx.amount)}
@@ -263,7 +389,7 @@ export default function App() {
               <button
                 onClick={() => {
                   if (typeof confirmAction === "function") {
-                    confirmAction(); // Explicitly call the action
+                    confirmAction();
                   }
                 }}
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
